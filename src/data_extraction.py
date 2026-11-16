@@ -1,7 +1,3 @@
-import os
-os.makedirs('src', exist_ok=True)
-
-%%writefile src/data_extraction.py
 import pandas as pd
 from sklearn.datasets import load_diabetes
 import os

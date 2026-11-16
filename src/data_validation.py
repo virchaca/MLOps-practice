@@ -1,5 +1,3 @@
-
-%%writefile src/data_validation.py
 import pandas as pd
 import numpy as np
 import os

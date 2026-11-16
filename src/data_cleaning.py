@@ -1,4 +1,3 @@
-%%writefile src/data_cleaning.py
 import pandas as pd
 import numpy as np
 import os
@@ -17,6 +16,11 @@ def clean_and_engineer_data(input_path="data/raw_data.csv", output_path="data/cl
     # 1. Limpieza básica
     df = df.dropna()
     df = df.drop_duplicates()
+
+    # Forzar tipo numérico y descartar valores que no se puedan convertir
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna()
     
     # 2. Ingeniería de Características (Feature Engineering)
     print("Generando variables de interacción...")

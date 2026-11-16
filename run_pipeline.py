@@ -1,4 +1,3 @@
-%%writefile run_pipeline.py
 import sys
 
 # Importar las funciones de nuestros módulos en src/

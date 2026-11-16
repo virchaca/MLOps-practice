@@ -1,0 +1,34 @@
+name: MLOps pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Data extraction
+        run: python -m src.data_extraction
+
+      - name: Data validation
+        run: python -m src.data_validation
+
+      - name: Data cleaning
+        run: python -m src.data_cleaning
+
+      - name: Train, register and select champion
+        run: python -m src.train

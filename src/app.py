@@ -1,18 +1,36 @@
-%%writefile src/app.py
-import os
-import numpy as np
-import pandas as pd
+from contextlib import asynccontextmanager
+
 import mlflow.sklearn
+import pandas as pd
 from fastapi import FastAPI, HTTPException
+from mlflow.tracking import MlflowClient
 from pydantic import BaseModel, Field
 
-app = FastAPI(
-    title="Diabetes Progression Prediction API",
-    description="API para predecir la progresión de la diabetes en pacientes basada en un modelo lineal con ingeniería de interacciones.",
-    version="1.0.0"
-)
+# Mismo nombre y alias que asigna src/train.py
+MODEL_NAME = "LinearRegressionDiabetesModel"
+MODEL_ALIAS = "champion"
+MODEL_URI = f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
 
-# Definir el esquema de los datos de entrada usando Pydantic
+FEATURE_COLUMNS = [
+    "age",
+    "sex",
+    "bmi",
+    "bp",
+    "s1",
+    "s2",
+    "s3",
+    "s4",
+    "s5",
+    "s6",
+    "bmi_age_interaction",
+    "bp_bmi_interaction",
+    "s1_s2_ratio",
+]
+
+model = None
+model_metadata = None
+
+
 class PatientData(BaseModel):
     age: float = Field(..., description="Edad (normalizada)")
     sex: float = Field(..., description="Sexo (normalizado)")
@@ -25,60 +43,74 @@ class PatientData(BaseModel):
     s5: float = Field(..., description="Medida de suero s5")
     s6: float = Field(..., description="Medida de suero s6")
 
-# Ruta para cargar el modelo entrenado desde el almacén local o MLflow
-MODEL_PATH = "mlruns/0/" # Ruta de fallback por defecto
-model = None
 
-@app.on_event("startup")
-def load_model():
-    global model
+def load_champion_model():
+    """Carga el modelo con alias champion. Si no existe, el servicio sigue en marcha."""
+    global model, model_metadata
+    model = None
+    model_metadata = None
     try:
-        # Intentamos buscar el modelo en los artefactos locales de MLflow
-        # En producción o contenedores, cargaríamos desde un Model Registry o ruta estática
-        print("Cargando el modelo registrado...")
-        # Buscaremos en local para evitar fallos si MLflow se ejecuta asíncronamente
-        # Para este entorno, si no existe el run de MLflow, usaremos un cargador controlado
-        import glob
-        paths = glob.glob("mlruns/*/*/artifacts/model")
-        if paths:
-            model = mlflow.sklearn.load_model(paths[0])
-            print(f"✅ Modelo cargado exitosamente desde MLflow: {paths[0]}")
-        else:
-            # Crearemos un modelo de fallback rápido para evitar que el servicio falle al iniciar
-            from sklearn.linear_model import LinearRegression
-            model = LinearRegression()
-            # Ajuste de prueba simulado de 13 características (10 base + 3 interacciones)
-            model.fit(np.zeros((5, 13)), np.zeros(5))
-            print("⚠️ Advertencia: No se detectó un modelo real entrenado en MLflow. Se inicializó un modelo de pruebas simulado.")
-    except Exception as e:
-        print(f"Error al cargar el modelo: {str(e)}")
-        raise RuntimeError(f"No se pudo iniciar el servicio de predicción: {str(e)}")
+        version_info = MlflowClient().get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
+        model = mlflow.sklearn.load_model(MODEL_URI)
+        model_metadata = {
+            "model_name": MODEL_NAME,
+            "model_version": version_info.version,
+            "alias": MODEL_ALIAS,
+            "run_id": version_info.run_id,
+            "status": version_info.status,
+            "source": version_info.source,
+        }
+        print(f"Modelo champion cargado: {MODEL_NAME} versión {version_info.version}")
+    except Exception as exc:
+        print(f"Modelo champion no disponible: {exc}")
 
-@app.get("/")
-def read_root():
-    return {"status": "Online", "message": "API de Predicción de Progresión de Diabetes activa. Ve a /docs para la documentación interactiva."}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    load_champion_model()
+    yield
+
+
+app = FastAPI(
+    title="Diabetes Progression Prediction API",
+    description="API para predecir la progresión de la diabetes con el modelo champion de regresión lineal.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+def require_model():
+    if model is None or model_metadata is None:
+        raise HTTPException(status_code=503, detail="Modelo champion no disponible.")
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/model-info")
+def model_info():
+    require_model()
+    return model_metadata
+
 
 @app.post("/predict")
 def predict(patient: PatientData):
-    if model is None:
-        raise HTTPException(status_code=503, detail="Modelo no inicializado de forma correcta.")
-        
+    require_model()
     try:
-        # 1. Convertir la entrada en un DataFrame de pandas
-        input_dict = patient.model_dump()
-        df_input = pd.DataFrame([input_dict])
-        
-        # 2. Recrear las interacciones (Feature Engineering) exactamente igual que en data_cleaning.py
-        df_input['bmi_age_interaction'] = df_input['bmi'] * df_input['age']
-        df_input['bp_bmi_interaction'] = df_input['bp'] * df_input['bmi']
-        df_input['s1_s2_ratio'] = df_input['s1'] / (df_input['s2'] + 1e-9)
-        
-        # 3. Realizar la predicción
+        row = patient.model_dump()
+        row["bmi_age_interaction"] = row["bmi"] * row["age"]
+        row["bp_bmi_interaction"] = row["bp"] * row["bmi"]
+        row["s1_s2_ratio"] = row["s1"] / (row["s2"] + 1e-9)
+        df_input = pd.DataFrame([row])[FEATURE_COLUMNS]
         prediction = model.predict(df_input)[0]
-        
         return {
             "prediction": float(prediction),
-            "input_features_received": input_dict
+            "model_name": model_metadata["model_name"],
+            "model_version": model_metadata["model_version"],
         }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error al procesar la predicción: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error al generar la predicción: {exc}") from exc
