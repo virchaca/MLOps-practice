@@ -134,7 +134,7 @@ Ejemplo de respuesta:
 {
   "prediction": 151.2,
   "model_name": "LinearRegressionDiabetesModel",
-  "model_version": "2"
+  "model_version": "3"
 }
 ```
 
